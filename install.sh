@@ -16,6 +16,9 @@ mkdir -p "$bin_dir"
 run_bun install --frozen-lockfile
 run_bun build --compile src/cli.ts --outfile "$bin_dir/simgate.new" \
   --define "SIMGATE_VERSION=\"$version\"" --define "SIMGATE_SOURCE=\"$source_dir\""
+# Bun's compiled binary carries the linker's ad-hoc signature over code it appended
+# afterwards, which macOS kills on launch (SIGKILL, invalid signature): sign it again.
+if [ "$(uname -s)" = Darwin ]; then codesign --force --sign - "$bin_dir/simgate.new"; fi
 # Replace the binary in one step, so a session starting meanwhile never runs half a file.
 mv "$bin_dir/simgate.new" "$bin_dir/simgate"
 "$bin_dir/simgate" version
