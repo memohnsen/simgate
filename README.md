@@ -60,8 +60,9 @@ changes the install and makes the record stale.
 
 The fingerprint is Expo's (`node_modules/.bin/fingerprint fingerprint:generate --platform
 ios`, the hash EAS uses for the runtime version) in an Expo project. It covers native code,
-config plugins and native dependencies, not JavaScript, so any worktree whose native side
-matches can use the build: Metro serves its JavaScript. A fingerprint Expo computed without
+the app config and config plugins, native dependencies and `package.json` scripts (which can
+run during a native build), not JavaScript, so any worktree whose native side matches can
+use the build: Metro serves its JavaScript. A change to any of those needs one rebuild. A fingerprint Expo computed without
 loading the app config is refused. Other projects pass `--fingerprint-command '<sh>'` that
 prints one token (for example `git rev-parse HEAD:ios`); without either, there is no
 current-build preference.
