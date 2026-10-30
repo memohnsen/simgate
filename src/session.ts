@@ -28,7 +28,9 @@ import {
   listSimulators,
   planSessionDevice,
   shutDownDevicesBootedSince,
+  shutDownSimulator,
   type BootedDevices,
+  type Simulator,
   type SimulatorListing,
 } from './devices'
 import { createLockOwner, runLocked, type LockOwner } from './lock'
@@ -195,20 +197,24 @@ const deviceChooser = (options: RunOptions, initial: SimulatorListing): ChooseDe
   }
 }
 
-/** Boots the claimed simulator when it is shut down, and says which session this is. */
-const prepareDevice = (owner: LockOwner, listing: SimulatorListing) => {
+/**
+ * Boots the claimed simulator when it is shut down, and says which session this is. Returns
+ * the device when this session booted it, so the session shuts it down however it ends.
+ */
+const prepareDevice = (owner: LockOwner, listing: SimulatorListing): Simulator | undefined => {
   const session = owner.simulatorSession
-  if (session === undefined) return
+  if (session === undefined) return undefined
   if (session.udid === undefined) {
     console.error(`simgate: slot ${session.slot}, Metro on port ${session.port}, no simulator claimed.`)
-    return
-  }
-  const device = listing.available.find((simulator) => simulator.udid === session.udid)
-  const booted = (listSimulators() ?? listing).booted.some((simulator) => simulator.udid === session.udid)
-  if (device !== undefined && !booted && !bootSimulator(device)) {
-    console.error(`simgate: could not boot ${device.name}; the command will try.`)
+    return undefined
   }
   console.error(`simgate: slot ${session.slot}, Metro on port ${session.port}, ${session.deviceName} (${session.udid}).`)
+  const device = listing.available.find((simulator) => simulator.udid === session.udid)
+  const booted = (listSimulators() ?? listing).booted.some((simulator) => simulator.udid === session.udid)
+  if (device === undefined || booted) return undefined
+  if (!bootSimulator(device)) console.error(`simgate: could not boot ${device.name}; the command will try.`)
+  // Even a failed or slow boot may finish later: the session owns the device either way.
+  return device
 }
 
 /** Starts recording the build the command installs, when asked and possible. */
@@ -238,10 +244,14 @@ export const runSession = async (command: string[], options: RunOptions): Promis
   // releases them, so the cleanup runs first, while this session still holds them, whether
   // the command exits, the lease stops it, or a signal or crash ends simgate.
   let bootedAtStart: BootedDevices | undefined
+  let bootedClaim: Simulator | undefined
   process.on('exit', () => {
     if (bootedAtStart === undefined) return
+    // The claimed device this session booted goes down whatever the listings say: a listing
+    // that fails or times out under load (a busy Metro) would otherwise leave it running.
+    if (bootedClaim !== undefined) shutDownSimulator(bootedClaim)
     shutDownDevicesBootedSince(bootedAtStart, {
-      keepSimulators: claimedDevices(options.basePath, owner.token),
+      keepSimulators: new Set([...claimedDevices(options.basePath, owner.token), ...(bootedClaim ? [bootedClaim.udid] : [])]),
       emulators: owner.simulatorSession?.slot === 1,
     })
   })
@@ -261,7 +271,7 @@ export const runSession = async (command: string[], options: RunOptions): Promis
         // Before the claimed device boots, so that boot counts as this session's.
         bootedAtStart = bootedDevices()
         const session = owner.simulatorSession ?? { slot: 1, port: options.basePort }
-        if (listing !== undefined) prepareDevice(owner, listing)
+        if (listing !== undefined) bootedClaim = prepareDevice(owner, listing)
         applySessionEnvironment(process.env, session)
         const aimed = aimCommand(command, session.udid, session.port)
         if ('error' in aimed) return aimed.error

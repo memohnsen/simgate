@@ -351,6 +351,18 @@ const signalProcesses = (pids: readonly number[], signal: NodeJS.Signals) => {
   }
 }
 
+const SURVIVOR_GRACE_MS = 3_000
+const SURVIVOR_POLL_MS = 100
+
+/** Waits briefly for `pids` to exit after a stop signal, then kills the rest. */
+const killSurvivors = async (pids: readonly number[]) => {
+  const alive = () => pids.filter((pid) => isProcessAlive(pid))
+  for (let waited = 0; waited < SURVIVOR_GRACE_MS && alive().length > 0; waited += SURVIVOR_POLL_MS) {
+    await Bun.sleep(SURVIVOR_POLL_MS)
+  }
+  signalProcesses(alive(), 'SIGKILL')
+}
+
 const SIGNAL_EXIT_CODES: Record<string, number> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }
 /** `timeout(1)`'s status for a command it stopped. */
 export const LEASE_EXPIRED_EXIT_CODE = 124
@@ -410,11 +422,20 @@ export const runLocked = async (
   owner: LockOwner = createLockOwner(),
 ) => {
   let child: ReturnType<typeof Bun.spawn> | undefined
+  /** The command's process tree when it was told to stop: what must be gone before the locks are released. */
+  let stopping: number[] = []
+  /**
+   * Stops the whole tree, not just the child: `expo run:ios` leaves Metro as a grandchild,
+   * which a signal to the child alone orphans, still holding the slot's port.
+   */
+  const stopTree = (signal: NodeJS.Signals) => {
+    if (child === undefined) return
+    stopping = processTree(child.pid)
+    signalProcesses(stopping, signal)
+  }
   for (const signal of Object.keys(SIGNAL_EXIT_CODES) as NodeJS.Signals[]) {
     process.on(signal, () => {
-      // The terminal already sends Ctrl-C to the child's process group; forward
-      // the rest and let the exit handler below release the lock.
-      if (child) child.kill(signal)
+      if (child) stopTree(signal)
       else process.exit(SIGNAL_EXIT_CODES[signal])
     })
   }
@@ -446,7 +467,6 @@ export const runLocked = async (
 
   let leaseExpired = false
   if (leaseMs !== undefined) {
-    const pid = child.pid
     const hint = leaseHint ? ` ${leaseHint}` : ''
     if (leaseMs > LEASE_WARNING_MS) {
       setTimeout(
@@ -457,13 +477,16 @@ export const runLocked = async (
     setTimeout(() => {
       leaseExpired = true
       console.error(`${label}: the lock's ${minutes(leaseMs)} lease ended; stopping it for the next waiter.${hint}`)
-      const tree = processTree(pid)
-      signalProcesses(tree, 'SIGTERM')
+      stopTree('SIGTERM')
+      const tree = stopping
       setTimeout(() => signalProcesses(tree, 'SIGKILL'), LEASE_KILL_GRACE_MS).unref()
     }, leaseMs).unref()
   }
 
   const exitCode = await child.exited
+  // Whatever of the stopped tree outlived the child (a Metro that ignored the signal) goes
+  // now, so the port is free when the next session takes the slot.
+  await killSurvivors(stopping)
   if (leaseExpired) process.exit(LEASE_EXPIRED_EXIT_CODE)
   const signalExit = child.signalCode ? SIGNAL_EXIT_CODES[child.signalCode] : undefined
   process.exit(signalExit ?? exitCode)

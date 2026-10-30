@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { deviceRequest, parseCli } from '../src/cli'
-import { LEASE_EXPIRED_EXIT_CODE, readLockOwner, releaseLock, tryAcquireLock, type LockOwner } from '../src/lock'
+import { LEASE_EXPIRED_EXIT_CODE, isProcessAlive, readLockOwner, releaseLock, tryAcquireLock, type LockOwner } from '../src/lock'
 import { DEFAULT_LEASE_MINUTES, applySessionEnvironment, isListening, leaseMinutes, lockPath, portProblem, sessionFor } from '../src/session'
 
 const cli = join(import.meta.dir, '../src/cli.ts')
@@ -245,6 +245,19 @@ describe('simgate run', () => {
     } finally {
       await close(server)
     }
+  })
+
+  test('a stop signal takes down the whole tree, so a grandchild Metro cannot keep the port', async () => {
+    const pidFile = join(directory, 'grandchild.pid')
+    // The grandchild ignores SIGTERM, like a Metro that will not stop: it must still go.
+    const child = await simgate(run(['sh', '-c', `sh -c 'trap "" TERM; echo $$ > ${pidFile}; while :; do sleep 1; done' & wait`]))
+    for (let waited = 0; !existsSync(pidFile) && waited < 5_000; waited += 50) await Bun.sleep(50)
+    const grandchild = Number(await Bun.file(pidFile).text())
+    expect(isProcessAlive(grandchild)).toBe(true)
+    child.kill('SIGTERM')
+    expect(await child.exited).toBe(143)
+    expect(isProcessAlive(grandchild)).toBe(false)
+    expect(existsSync(basePath)).toBe(false)
   })
 
   test('stops the command and its children when the lease ends', async () => {
