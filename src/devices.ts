@@ -316,11 +316,18 @@ export type SessionCleanup = {
   emulators: boolean
 }
 
-/** Shuts down what the session booted since `before`. Synchronous, so it can run in an exit handler. */
-export const shutDownDevicesBootedSince = (before: BootedDevices, { keepSimulators, emulators }: SessionCleanup) => {
-  const booted = devicesBootedDuring(before, bootedDevices())
-  for (const simulator of booted.simulators) {
-    if (!keepSimulators.has(simulator.udid)) shutDownSimulator(simulator)
+/** What a session shuts down at its end: booted during it, not another session's, and emulators only in slot 1. */
+export const sessionShutdowns = (before: BootedDevices, after: BootedDevices, { keepSimulators, emulators }: SessionCleanup) => {
+  const booted = devicesBootedDuring(before, after)
+  return {
+    simulators: booted.simulators.filter((simulator) => !keepSimulators.has(simulator.udid)),
+    emulators: emulators ? booted.emulators : [],
   }
-  if (emulators) for (const serial of booted.emulators) shutDownEmulator(serial)
+}
+
+/** Shuts down what the session booted since `before`. Synchronous, so it can run in an exit handler. */
+export const shutDownDevicesBootedSince = (before: BootedDevices, cleanup: SessionCleanup) => {
+  const shutdowns = sessionShutdowns(before, bootedDevices(), cleanup)
+  for (const simulator of shutdowns.simulators) shutDownSimulator(simulator)
+  for (const serial of shutdowns.emulators) shutDownEmulator(serial)
 }

@@ -85,6 +85,8 @@ describe('parseCli', () => {
       '--record-build',
       '--fingerprint-command',
       'git rev-parse HEAD:ios',
+      '--open-url',
+      'app://expo-development-client/?url=http%3A%2F%2Flocalhost%3A{port}',
       '--lease-min',
       '60',
       '--',
@@ -99,6 +101,7 @@ describe('parseCli', () => {
       bundleId: 'com.example.app',
       recordBuild: true,
       fingerprintCommand: 'git rev-parse HEAD:ios',
+      openUrl: 'app://expo-development-client/?url=http%3A%2F%2Flocalhost%3A{port}',
       leaseMin: '60',
     })
     expect(parseCli(['in-session', '--', 'maestro', 'test'])).toEqual({ kind: 'in-session', command: ['maestro', 'test'] })
@@ -290,6 +293,19 @@ describe('simgate in-session', () => {
     ])
     expect(await ran.exited).toBe(3)
     expect(readLockOwner(join(directory, 'simulator-2.lock'))?.token).toBe(holder.token)
+  })
+})
+
+describe('simgate in-session signals', () => {
+  test('a stop signal takes down the whole command tree', async () => {
+    tryAcquireLock(basePath, heldBy(directory, { simulatorSession: { slot: 1, port: 8081 } }))
+    const pidFile = join(directory, 'grandchild.pid')
+    const child = await simgate(['in-session', '--', 'sh', '-c', `sh -c 'trap "" TERM; echo $$ > ${pidFile}; while :; do sleep 1; done' & wait`])
+    for (let waited = 0; !existsSync(pidFile) && waited < 5_000; waited += 50) await Bun.sleep(50)
+    const grandchild = Number(await Bun.file(pidFile).text())
+    child.kill('SIGTERM')
+    expect(await child.exited).toBe(143)
+    expect(isProcessAlive(grandchild)).toBe(false)
   })
 })
 

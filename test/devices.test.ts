@@ -9,6 +9,7 @@ import {
   planSessionDevice,
   aimCommand,
   requestedDevice,
+  sessionShutdowns,
   type Simulator,
 } from '../src/devices'
 
@@ -203,5 +204,24 @@ describe('planSessionDevice', () => {
     expect(plan('iPad Pro 11-inch (M5)', [q], new Set(['Q']))).toEqual({ kind: 'claimed', devices: [q] })
     expect(plan('Nope', [a])).toEqual({ kind: 'unknown' })
     expect(planSessionDevice(undefined, { available: [p, q], booted: [p] }, none, none)).toEqual({ kind: 'unknown' })
+  })
+})
+
+describe('sessionShutdowns', () => {
+  const before = { simulators: [iphone('A')], emulators: ['emulator-5554'] }
+  const after = { simulators: [iphone('A'), iphone('B'), ipad('P')], emulators: ['emulator-5554', 'emulator-5556'] }
+
+  test('shuts down what the session booted, except another live session’s device', () => {
+    expect(sessionShutdowns(before, after, { keepSimulators: new Set(['B']), emulators: true })).toEqual({
+      simulators: [ipad('P')],
+      emulators: ['emulator-5556'],
+    })
+  })
+
+  test('leaves emulators to slot 1, the only slot that runs Android', () => {
+    expect(sessionShutdowns(before, after, { keepSimulators: new Set(), emulators: false })).toEqual({
+      simulators: [iphone('B'), ipad('P')],
+      emulators: [],
+    })
   })
 })

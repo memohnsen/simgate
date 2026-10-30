@@ -5,6 +5,7 @@ import { join } from 'node:path'
 
 import {
   buildRecordsDirectory,
+  devicesWithCurrentBuild,
   hasBuildRecords,
   installIdentity,
   isCurrentBuild,
@@ -122,5 +123,21 @@ describe('fingerprints', () => {
     expect(await nativeFingerprint(directory)).toBeUndefined()
     expect(await nativeFingerprint(directory, 'echo deadbeef')).toBe('deadbeef')
     expect(await nativeFingerprint(directory, 'exit 3')).toBeUndefined()
+  })
+})
+
+describe('devicesWithCurrentBuild', () => {
+  test('reads installed apps only on devices with a record of this fingerprint', () => {
+    const OTHER = 'BBBBBBBB-0000-4000-8000-000000000002'
+    const STALE = 'CCCCCCCC-0000-4000-8000-000000000003'
+    writeBuildRecord(directory, record())
+    writeBuildRecord(directory, record({ udid: STALE, fingerprint: 'native-old' }))
+    const scanned: string[] = []
+    const identity = (udid: string) => {
+      scanned.push(udid)
+      return 'container/Atlas.app@1'
+    }
+    expect(devicesWithCurrentBuild(directory, APP_ID, [UDID, OTHER, STALE], 'native-1', identity)).toEqual(new Set([UDID]))
+    expect(scanned).toEqual([UDID])
   })
 })

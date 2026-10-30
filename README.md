@@ -31,7 +31,8 @@ simgate status
   directory; simgate never kills it.
 - **Leases.** A session stops after 30 minutes (`--lease-min`, `SIMGATE_LEASE_MIN`), with a
   warning two minutes before, so a forgotten Metro cannot hold a slot forever (exit 124).
-- **Cleanup.** However a session ends (exit, lease, Ctrl-C, crash), simgate shuts down every
+- **Cleanup.** However a session ends (exit, lease, `kill`, Ctrl-C, crash), simgate stops the
+  command's whole process tree (so Metro frees the port), then shuts down every
   simulator booted while it ran, except one another live session claimed, and, in slot 1,
   every emulator. Devices booted before the session started are left alone.
 - **One session per worktree.** A second `simgate run` from the same directory exits at once.
@@ -47,8 +48,9 @@ other live session holds, it takes the first tier that has one, most recently us
 3. any other booted simulator (no boot, but the command builds);
 4. any other shut-down simulator, under the same cap (fresh boot and build: the fallback).
 
-A named device may pass the cap, since the caller asked for it. When every matching
-simulator is held by another session, the session gives its slot back and waits.
+A named device may pass the cap, since the caller asked for it. A session plans its device
+before it takes a slot: when every matching simulator is held by another session, it waits
+without holding one, so it never keeps Android out of slot 1.
 
 A build is **current** when the app (`--bundle-id`) installed on the simulator is the
 install simgate recorded, and the native fingerprint recorded with it equals the checkout's.
@@ -76,6 +78,9 @@ current-build preference.
 - Environment: `SIMGATE_UDID`, `SIMGATE_PORT`, `SIMGATE_SLOT`, and `RCT_METRO_PORT`.
 - `simgate in-session -- <command>` runs only while this worktree holds a session, aimed at
   that session's simulator and port, and takes no lock (Maestro against the loaded app).
+- `--open-url <url>` opens the URL (with `{port}` filled) on the claimed simulator once Metro
+  listens. Pass the Expo dev client URL on `start`: a reused build reopens the last server it
+  loaded, which may be another slot's Metro, so the session points it at its own.
 - `--no-metro` is for commands that drive a simulator without Metro (XCUITest, Maestro
   against an installed build, a bare boot): same slots, claim, lease and cleanup, no port check.
 
@@ -85,10 +90,10 @@ A repository keeps only its rule in `AGENTS.md` and scripts that call `simgate`:
 
 ```jsonc
 // Expo (Atlas, MeetCal): package.json
-"start":   "simgate run --platform ios --bundle-id com.memohnsen.atlas -- bunx expo start",
+"start":   "simgate run --platform ios --bundle-id com.memohnsen.atlas --open-url 'com.memohnsen.atlas://expo-development-client/?url=http%3A%2F%2Flocalhost%3A{port}' -- expo start",
 "ios":     "simgate run --platform ios --bundle-id com.memohnsen.atlas --record-build -- bun run scripts/run-ios.ts --device {udid}",
-"android": "simgate run --platform android -- bunx expo run:android",
-"sim:lock": "simgate run --platform ios --no-metro --",
+"android": "simgate run --platform android -- expo run:android",
+"sim:lock": "simgate run --platform ios --no-metro --bundle-id com.memohnsen.atlas --",
 "test:e2e": "simgate in-session -- maestro --device {udid} test .maestro"
 ```
 
@@ -108,8 +113,8 @@ Atlas's and MeetCal's in-repo lock scripts used, with the same owner format. A c
 still runs those scripts takes slot 1 and queues with simgate's sessions. Because such a
 holder does not record its simulator, simgate never runs a slot-2 session beside it. The one
 gap is a session already running in slot 2 when an old checkout takes slot 1: the old
-script picks any booted simulator. It closes once every checkout on the machine has the
-repository change that switches to simgate.
+script picks any booted simulator, which can be slot 2's. It closes once every checkout on
+the machine has the repository change that switches to simgate: rebase in-flight worktrees.
 
 Slot 2 is `simulator-2.lock`, claims are `simulator-device-<UDID>.lock`, beside slot 1.
 `SIMGATE_LOCK_PATH` moves slot 1 (tests); `SIMGATE_BASE_PORT` moves 8081 (tests).

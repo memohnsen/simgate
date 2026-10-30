@@ -22,6 +22,7 @@ import { join } from 'node:path'
 
 import { buildRecordsDirectory, devicesWithCurrentBuild, hasBuildRecords, nativeFingerprint, recordNextInstall } from './builds'
 import {
+  PORT_PLACEHOLDER,
   aimCommand,
   bootSimulator,
   bootedDevices,
@@ -33,7 +34,7 @@ import {
   type Simulator,
   type SimulatorListing,
 } from './devices'
-import { createLockOwner, runLocked, type LockOwner } from './lock'
+import { SIGNAL_EXIT_CODES, createLockOwner, killSurvivors, processTree, runLocked, signalProcesses, type LockOwner } from './lock'
 import { claimedDevices, describeSlots, simulatorSlots, worktreeSession, type ChooseDevice } from './slots'
 
 export type Env = Record<string, string | undefined>
@@ -168,6 +169,12 @@ export type RunOptions = {
   bundleId: string | undefined
   recordBuild: boolean
   fingerprintCommand: string | undefined
+  /**
+   * Opened on the claimed simulator once Metro listens, with `{port}` filled: an Expo dev
+   * client's URL, so a reused build loads this session's Metro rather than the one it last
+   * opened (which may be another slot's).
+   */
+  openUrl: string | undefined
   leaseMinutes: number
   basePath: string
   basePort: number
@@ -175,26 +182,54 @@ export type RunOptions = {
 
 /**
  * Plans the simulator an iOS session claims, re-listing devices on every attempt so a device
- * another session just booted counts. The fingerprint is computed once, and only when some
- * device has a build record of the app to compare it with.
+ * another session just booted counts. The fingerprint is asked for only when some device has
+ * a build record of the app to compare it with.
  */
-const deviceChooser = (options: RunOptions, initial: SimulatorListing): ChooseDevice => {
+const deviceChooser = (options: RunOptions, initial: SimulatorListing, fingerprint: () => Promise<string | undefined>): ChooseDevice => {
   const records = buildRecordsDirectory(options.basePath)
   const { bundleId } = options
-  let fingerprint: Promise<string | undefined> | undefined
   return async (claimedByOthers) => {
     const listing = listSimulators() ?? initial
     let current = new Set<string>()
-    if (bundleId !== undefined) {
-      fingerprint ??= hasBuildRecords(records, bundleId)
-        ? nativeFingerprint(process.cwd(), options.fingerprintCommand)
-        : Promise.resolve(undefined)
-      const hash = await fingerprint
+    if (bundleId !== undefined && hasBuildRecords(records, bundleId)) {
+      const hash = await fingerprint()
       const udids = listing.available.map((simulator) => simulator.udid)
       if (hash !== undefined) current = devicesWithCurrentBuild(records, bundleId, udids, hash)
     }
     return planSessionDevice(options.request, listing, claimedByOthers, current)
   }
+}
+
+/** Computes the checkout's fingerprint at most once per session: it can take seconds. */
+const memoizedFingerprint = (options: RunOptions) => {
+  let fingerprint: Promise<string | undefined> | undefined
+  return () => (fingerprint ??= nativeFingerprint(process.cwd(), options.fingerprintCommand))
+}
+
+const OPEN_URL_WAIT_MS = 180_000
+const OPEN_URL_POLL_MS = 1_000
+
+/**
+ * Once Metro listens on `port`, opens `url` on the simulator. Runs beside the command and
+ * gives up after three minutes; a failure only means the app was not opened for you.
+ */
+const openWhenListening = (udid: string, port: number, url: string) => {
+  const started = Date.now()
+  const poll = async () => {
+    if (Date.now() - started > OPEN_URL_WAIT_MS) {
+      console.error(`simgate: Metro did not listen on ${port}; open ${url} yourself.`)
+      return
+    }
+    const [ipv4, ipv6] = await Promise.all([isListening(port, '127.0.0.1'), isListening(port, '::1')])
+    if (!ipv4 && !ipv6) {
+      setTimeout(poll, OPEN_URL_POLL_MS).unref()
+      return
+    }
+    const result = Bun.spawnSync(['xcrun', 'simctl', 'openurl', udid, url], { stderr: 'pipe', timeout: 30_000 })
+    if (result.exitCode === 0) console.error(`simgate: opened ${url} on ${udid}.`)
+    else console.error(`simgate: could not open ${url} on ${udid} (is the app installed?).`)
+  }
+  setTimeout(poll, OPEN_URL_POLL_MS).unref()
 }
 
 /**
@@ -218,9 +253,9 @@ const prepareDevice = (owner: LockOwner, listing: SimulatorListing): Simulator |
 }
 
 /** Starts recording the build the command installs, when asked and possible. */
-const startBuildRecording = async (options: RunOptions, udid: string | undefined) => {
+const startBuildRecording = async (options: RunOptions, udid: string | undefined, fingerprintOnce: () => Promise<string | undefined>) => {
   if (!options.recordBuild || udid === undefined || options.bundleId === undefined) return
-  const fingerprint = await nativeFingerprint(process.cwd(), options.fingerprintCommand)
+  const fingerprint = await fingerprintOnce()
   if (fingerprint === undefined) {
     console.error('simgate: could not compute the native fingerprint; this build will not be recorded as current.')
     return
@@ -240,6 +275,7 @@ export const runSession = async (command: string[], options: RunOptions): Promis
   }
   const label = options.metro ? 'Metro' : 'Simulator session'
   const owner = createLockOwner()
+  const fingerprintOnce = memoizedFingerprint(options)
   // Set once the locks are held. Registered before runLocked's own exit handler, which
   // releases them, so the cleanup runs first, while this session still holds them, whether
   // the command exits, the lease stops it, or a signal or crash ends simgate.
@@ -262,23 +298,29 @@ export const runSession = async (command: string[], options: RunOptions): Promis
         basePath: options.basePath,
         basePort: options.basePort,
         label,
-        chooseDevice: listing === undefined ? undefined : deviceChooser(options, listing),
+        chooseDevice: listing === undefined ? undefined : deviceChooser(options, listing, fingerprintOnce),
       }),
       label,
       leaseMs: options.leaseMinutes * 60_000,
       leaseHint: 'Pass --lease-min (or set SIMGATE_LEASE_MIN) to hold it longer.',
       beforeRun: async () => {
-        // Before the claimed device boots, so that boot counts as this session's.
-        bootedAtStart = bootedDevices()
         const session = owner.simulatorSession ?? { slot: 1, port: options.basePort }
-        if (listing !== undefined) bootedClaim = prepareDevice(owner, listing)
-        applySessionEnvironment(process.env, session)
+        // First, so a busy port costs no boot.
+        const problem = options.metro ? await portProblem(session.port) : undefined
+        if (problem !== undefined) return problem
         const aimed = aimCommand(command, session.udid, session.port)
         if ('error' in aimed) return aimed.error
+        // Before the claimed device boots, so that boot counts as this session's.
+        bootedAtStart = bootedDevices()
+        if (listing !== undefined) bootedClaim = prepareDevice(owner, listing)
+        applySessionEnvironment(process.env, session)
         // runLocked spawns this array once beforeRun returns; the device is known only now.
         command.splice(0, command.length, ...aimed)
-        await startBuildRecording(options, session.udid)
-        return options.metro ? portProblem(session.port) : undefined
+        await startBuildRecording(options, session.udid, fingerprintOnce)
+        if (options.openUrl !== undefined && options.metro && session.udid !== undefined) {
+          openWhenListening(session.udid, session.port, options.openUrl.replaceAll(PORT_PLACEHOLDER, String(session.port)))
+        }
+        return undefined
       },
     },
     owner,
@@ -302,5 +344,17 @@ export const runInSession = async (command: string[], basePath: string, fallback
     env: applySessionEnvironment({ ...process.env }, target),
     stdio: ['inherit', 'inherit', 'inherit'],
   })
-  process.exit(await child.exited)
+  // Stop the whole tree with simgate, so nothing keeps driving the simulator after a timeout
+  // kills this command.
+  let stopping: number[] = []
+  for (const signal of Object.keys(SIGNAL_EXIT_CODES) as NodeJS.Signals[]) {
+    process.on(signal, () => {
+      stopping = processTree(child.pid)
+      signalProcesses(stopping, signal)
+    })
+  }
+  const exitCode = await child.exited
+  await killSurvivors(stopping)
+  const signalExit = child.signalCode ? SIGNAL_EXIT_CODES[child.signalCode] : undefined
+  process.exit(signalExit ?? exitCode)
 }

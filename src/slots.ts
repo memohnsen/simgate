@@ -36,7 +36,7 @@ import {
   type LockOwner,
   type SimulatorSession,
 } from './lock'
-import { isSimulatorUdid, type DeviceChoice } from './devices'
+import { isSimulatorUdid, type DeviceChoice, type Simulator } from './devices'
 
 export const SLOT_COUNT = 2
 const POLL_INTERVAL_MS = 2_000
@@ -113,6 +113,9 @@ export const describeSlots = (basePath: string, slots: readonly number[], nowMs:
     .map((owner) => describeOwner(owner, nowMs))
     .join(' and ')
 
+const claimedReason = (devices: readonly Simulator[]) =>
+  `${devices.map((device) => device.name).join(', ')} (claimed by another session)`
+
 export type ChooseDevice = (claimedByOthers: ReadonlySet<string>) => Promise<DeviceChoice>
 
 type SlotOptions = {
@@ -171,9 +174,7 @@ export const simulatorSlots =
       for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt += 1) {
         const choice = await choose(claimedDevices(basePath, owner.token, isAlive))
         if (choice.kind === 'unknown') throw new Error('No simulator matches the requested device; see xcrun simctl list devices.')
-        if (choice.kind === 'claimed') {
-          return { reason: `${choice.devices.map((device) => device.name).join(', ')} (claimed by another session)` }
-        }
+        if (choice.kind === 'claimed') return { reason: claimedReason(choice.devices) }
         const path = deviceLockPath(basePath, choice.device.udid)
         sweepLeftovers(path)
         owner.simulatorSession = { ...session, udid: choice.device.udid, deviceName: choice.device.name }
@@ -189,6 +190,13 @@ export const simulatorSlots =
       const session = { slot, port: slotPort(basePort, slot) }
       owner.simulatorSession = session
       if (take(slotPath) !== 'taken') return undefined
+      // The same-worktree check before acquiring is not atomic with it: two runs started
+      // together from one worktree could take a slot each. The one that sees the other yields.
+      const other = liveOwner(slotLockPath(basePath, SLOT_COUNT + 1 - slot), isAlive)
+      if (other !== undefined && other.worktree === owner.worktree) {
+        releaseLock(slotPath, owner)
+        throw new LockHeldByWorktreeError(other)
+      }
       if (chooseDevice === undefined) return [slotPath]
       let claim: string | { reason: string }
       try {
@@ -211,8 +219,13 @@ export const simulatorSlots =
       const mine = worktreeSession(basePath, owner.worktree, isAlive)
       if (mine !== undefined) throw new LockHeldByWorktreeError(mine)
 
+      // Plan before taking a slot: a session whose devices are all claimed waits without
+      // holding slot 1, which Android needs. The plan is redone under the slot to claim.
+      const preplan = chooseDevice === undefined ? undefined : await chooseDevice(claimedDevices(basePath, owner.token, isAlive))
+      if (preplan?.kind === 'unknown') throw new Error('No simulator matches the requested device; see xcrun simctl list devices.')
       const slots = [1]
-      let result = await takeSlot(1)
+      let result: string[] | { reason: string } | undefined =
+        preplan?.kind === 'claimed' ? { reason: claimedReason(preplan.devices) } : await takeSlot(1)
       // Read after the attempt, so a holder that took slot 1 meanwhile is the one judged.
       if (result === undefined && maySecondSlot(chooseDevice !== undefined, liveOwner(slotLockPath(basePath, 1), isAlive))) {
         slots.push(2)

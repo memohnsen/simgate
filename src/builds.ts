@@ -186,12 +186,24 @@ export const nativeFingerprint = async (projectRoot: string, command?: string): 
   return output === undefined ? undefined : parseExpoFingerprint(output)
 }
 
-/** Of `udids`, the devices holding a current build of `bundleId`. Reads only devices that have a record. */
-export const devicesWithCurrentBuild = (directory: string, bundleId: string, udids: readonly string[], fingerprint: string) =>
+/**
+ * Of `udids`, the devices holding a current build of `bundleId`. A device's installed apps
+ * are read only when it has a record with this fingerprint: scanning them spawns `plutil`
+ * per app, and a machine can list dozens of simulators.
+ */
+export const devicesWithCurrentBuild = (
+  directory: string,
+  bundleId: string,
+  udids: readonly string[],
+  fingerprint: string,
+  identity: (udid: string, bundleId: string) => string | undefined = installIdentity,
+) =>
   new Set(
-    udids.filter((udid) =>
-      isCurrentBuild(readBuildRecord(directory, udid, bundleId), fingerprint, installIdentity(udid, bundleId)),
-    ),
+    udids.filter((udid) => {
+      const record = readBuildRecord(directory, udid, bundleId)
+      if (record === undefined || record.fingerprint !== fingerprint) return false
+      return isCurrentBuild(record, fingerprint, identity(udid, bundleId))
+    }),
   )
 
 /** True when any device has a build record of `bundleId`, so the fingerprint is worth computing. */

@@ -33,6 +33,8 @@ run options:
   --bundle-id <id>            The app: prefer simulators with a current build of it.
   --record-build              Record the install the command makes as current.
   --fingerprint-command <sh>  Prints the native fingerprint (default: Expo's, when present).
+  --open-url <url>            Open on the simulator once Metro listens ({port} filled): the
+                              dev client URL, so a reused build loads this session's Metro.
   --lease-min <minutes>       Stop the command after this long (default 30; also
                               SIMGATE_LEASE_MIN).
 
@@ -41,12 +43,12 @@ any --device flag is pointed at the claimed simulator. The command also gets SIM
 SIMGATE_PORT, SIMGATE_SLOT and RCT_METRO_PORT.`
 
 type Parsed =
-  | { kind: 'run'; command: string[]; platform: Platform; metro: boolean; device?: string; bundleId?: string; recordBuild: boolean; fingerprintCommand?: string; leaseMin?: string }
+  | { kind: 'run'; command: string[]; platform: Platform; metro: boolean; device?: string; bundleId?: string; recordBuild: boolean; fingerprintCommand?: string; openUrl?: string; leaseMin?: string }
   | { kind: 'in-session'; command: string[] }
   | { kind: 'status' | 'update' | 'version' | 'help' }
   | { kind: 'error'; message: string }
 
-const VALUE_FLAGS = ['--platform', '--device', '--bundle-id', '--fingerprint-command', '--lease-min'] as const
+const VALUE_FLAGS = ['--platform', '--device', '--bundle-id', '--fingerprint-command', '--open-url', '--lease-min'] as const
 const PLATFORMS: readonly Platform[] = ['ios', 'android', 'web']
 
 /** The subcommand, its options and the command after `--`. */
@@ -91,6 +93,7 @@ export const parseCli = (argv: readonly string[]): Parsed => {
     bundleId: values['--bundle-id'],
     recordBuild,
     fingerprintCommand: values['--fingerprint-command'],
+    openUrl: values['--open-url'],
     leaseMin: values['--lease-min'],
   }
 }
@@ -146,6 +149,7 @@ if (import.meta.main) {
         bundleId: parsed.bundleId,
         recordBuild: parsed.recordBuild,
         fingerprintCommand: parsed.fingerprintCommand,
+        openUrl: parsed.openUrl,
         leaseMinutes: leaseMinutes(parsed.leaseMin, process.env),
         basePath: base,
         basePort: basePort(process.env),

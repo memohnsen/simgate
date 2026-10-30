@@ -215,6 +215,39 @@ describe('simulatorSlots', () => {
     expect(worktreeSession(basePath, '/work/mine', alive)?.simulatorSession?.slot).toBe(2)
   })
 
+  test('waits without holding slot 1 while every device it may use is claimed, so Android is not starved', async () => {
+    const holder = holdSession('/work/first', 2, UDID_A)
+    let slotOneHeldWhileClaimed = false
+    const watching: ChooseDevice = async (claimed) => {
+      const choice = await firstFree([phoneA])(claimed)
+      slotOneHeldWhileClaimed ||= choice.kind === 'claimed' && existsSync(basePath)
+      return choice
+    }
+    const { paths } = await acquire('/work/second', {
+      chooseDevice: watching,
+      onWait: (poll) => {
+        if (poll === 2) releaseLock(deviceLockPath(basePath, UDID_A), holder)
+      },
+    })
+    expect(slotOneHeldWhileClaimed).toBe(false)
+    expect(paths).toEqual([basePath, deviceLockPath(basePath, UDID_A)])
+  })
+
+  test('yields when a run from the same worktree takes the other slot at the same moment', async () => {
+    let raced = false
+    // The other run takes slot 2 after this one's same-worktree check, before it takes slot 1.
+    const racing: ChooseDevice = async (claimed) => {
+      if (!raced) {
+        raced = true
+        holdSession('/work/mine', 2, UDID_B)
+      }
+      return firstFree([phoneA])(claimed)
+    }
+    await expect(acquire('/work/mine', { chooseDevice: racing })).rejects.toBeInstanceOf(LockHeldByWorktreeError)
+    expect(existsSync(basePath)).toBe(false)
+    expect(existsSync(deviceLockPath(basePath, UDID_A))).toBe(false)
+  })
+
   test('gives the slot back when the device plan fails', async () => {
     const failing: ChooseDevice = async () => ({ kind: 'unknown' })
     await expect(acquire('/work/mine', { chooseDevice: failing })).rejects.toThrow('No simulator matches')

@@ -336,12 +336,12 @@ export const treeOf = (root: number, children: Map<number, number[]>): number[] 
 }
 
 /** The running tree under `root` (`bun run` starting Expo starting Metro); just `root` when `ps` fails. */
-const processTree = (root: number): number[] => {
+export const processTree = (root: number): number[] => {
   const result = Bun.spawnSync(['ps', '-A', '-o', 'pid=,ppid='])
   return result.exitCode === 0 ? treeOf(root, parseProcessTable(result.stdout.toString())) : [root]
 }
 
-const signalProcesses = (pids: readonly number[], signal: NodeJS.Signals) => {
+export const signalProcesses = (pids: readonly number[], signal: NodeJS.Signals) => {
   for (const pid of pids) {
     try {
       process.kill(pid, signal)
@@ -355,7 +355,7 @@ const SURVIVOR_GRACE_MS = 3_000
 const SURVIVOR_POLL_MS = 100
 
 /** Waits briefly for `pids` to exit after a stop signal, then kills the rest. */
-const killSurvivors = async (pids: readonly number[]) => {
+export const killSurvivors = async (pids: readonly number[]) => {
   const alive = () => pids.filter((pid) => isProcessAlive(pid))
   for (let waited = 0; waited < SURVIVOR_GRACE_MS && alive().length > 0; waited += SURVIVOR_POLL_MS) {
     await Bun.sleep(SURVIVOR_POLL_MS)
@@ -363,7 +363,7 @@ const killSurvivors = async (pids: readonly number[]) => {
   signalProcesses(alive(), 'SIGKILL')
 }
 
-const SIGNAL_EXIT_CODES: Record<string, number> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }
+export const SIGNAL_EXIT_CODES: Record<string, number> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }
 /** `timeout(1)`'s status for a command it stopped. */
 export const LEASE_EXPIRED_EXIT_CODE = 124
 const LEASE_WARNING_MS = 2 * 60_000
@@ -449,7 +449,9 @@ export const runLocked = async (
     process.exit(1)
   }
   process.on('exit', () => {
-    for (const lockPath of lockPaths) releaseLock(lockPath, owner)
+    // Last taken, first released: a device claim goes before its slot, so a waiter that
+    // takes the slot never finds the device still claimed.
+    for (const lockPath of [...lockPaths].reverse()) releaseLock(lockPath, owner)
   })
 
   const problem = await beforeRun?.()
