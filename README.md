@@ -90,7 +90,7 @@ A repository keeps only its rule in `AGENTS.md` and scripts that call `simgate`:
 
 ```jsonc
 // Expo (Atlas, MeetCal): package.json
-"start":   "simgate run --platform ios --bundle-id com.memohnsen.atlas --open-url 'com.memohnsen.atlas://expo-development-client/?url=http%3A%2F%2Flocalhost%3A{port}' -- expo start",
+"start":   "simgate run --platform ios --bundle-id com.memohnsen.atlas --open-url 'exp+atlas://expo-development-client/?url=http%3A%2F%2Flocalhost%3A{port}' -- expo start",
 "ios":     "simgate run --platform ios --bundle-id com.memohnsen.atlas --record-build -- bun run scripts/run-ios.ts --device {udid}",
 "android": "simgate run --platform android -- expo run:android",
 "sim:lock": "simgate run --platform ios --no-metro --bundle-id com.memohnsen.atlas --",
