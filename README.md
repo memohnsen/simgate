@@ -39,8 +39,27 @@ simgate status
 
 ## Which simulator a session gets
 
+A session only ever claims one of the three simulators kept in Device Hub on every Mac
+(`KEPT_SIMULATOR_NAMES` in `src/devices.ts`):
+
+| Kept simulator | Use |
+| --- | --- |
+| `iPhone 18 Pro Max` | an iPhone, by default or by name |
+| `iPhone Duo` | an iPhone, by default or by name: the second iOS session's when the first holds the Pro Max |
+| `iPad Pro 13-inch (M5)` | the iPad, by name only |
+
+They are pinned by display name, since every Mac has its own UDIDs. A name matches whatever
+its case, spacing, dashes or brackets (`iPad Pro (13-inch) (M5)`). When one name is on
+several simulators (one per runtime), simgate uses the most recently used one and ignores
+the rest. Every other simulator simctl lists is ignored too, booted or not: each simulator
+used grows its own folder of builds and data, which is how a Mac fills up. simgate never
+creates a simulator: a session picks among the kept iPhones the Mac has, and a request for
+a kept simulator the Mac lacks fails, saying to add it in Device Hub.
+
 An iOS session asks for a device with `--device <name or UDID>`, `SIMGATE_DEVICE`, or a
-`--device` in its own command; with none it gets an iPhone. Of the matching simulators no
+`--device` in its own command; with none it gets one of the kept iPhones. A request must
+name a kept simulator, or give a kept simulator's UDID: anything else fails at once, listing
+the three, rather than fall back to some other iPhone. Of the matching kept simulators no
 other live session holds, it takes the first tier that has one, most recently used first:
 
 1. a booted simulator with a **current build**: nothing to boot, nothing to build;
@@ -104,7 +123,8 @@ simgate run --platform ios --no-metro --bundle-id <bundle id> --record-build \
   sh -c 'xcodebuild -scheme App -destination id=$SIMGATE_UDID ... && xcrun simctl install $SIMGATE_UDID ...'
 ```
 
-An iPad check: `SIMGATE_DEVICE="iPad Pro 13-inch (M5)" bun run ios` (or `-- --device "<name>"`).
+An iPad check: `SIMGATE_DEVICE="iPad Pro 13-inch (M5)" bun run ios` (or `-- --device "<name>"`,
+with any of the three kept names).
 
 ## Compatibility
 

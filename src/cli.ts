@@ -5,7 +5,7 @@
  */
 import { homedir } from 'node:os'
 
-import { requestedDevice } from './devices'
+import { KEPT_SIMULATOR_NAMES, requestedDevice } from './devices'
 import { basePort, leaseMinutes, lockPath, runInSession, runSession, type Platform } from './session'
 import { statusReport } from './status'
 
@@ -29,7 +29,9 @@ run options:
                               slot 1 only; iOS may take slot 2 beside another session.
   --no-metro                  The command drives a simulator without Metro: no port check.
   --device <name or UDID>     The simulator to claim (also SIMGATE_DEVICE, or the command's
-                              own --device). Default: an iPhone.
+                              own --device): only one of the three kept in Device Hub,
+${KEPT_SIMULATOR_NAMES.map((name) => `                                ${name}`).join('\n')}
+                              or its UDID. Default: a kept iPhone.
   --bundle-id <id>            The app: prefer simulators with a current build of it.
   --record-build              Record the install the command makes as current.
   --fingerprint-command <sh>  Prints the native fingerprint (default: Expo's, when present).

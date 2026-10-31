@@ -4,12 +4,15 @@ import {
   deviceFamily,
   devicesBootedDuring,
   isSimulatorUdid,
+  keptSimulators,
+  KEPT_SIMULATOR_NAMES,
   parseAdbEmulators,
   parseSimulators,
   planSessionDevice,
   aimCommand,
   requestedDevice,
   sessionShutdowns,
+  simulatorNameKey,
   type Simulator,
 } from '../src/devices'
 
@@ -151,16 +154,34 @@ test('isSimulatorUdid accepts only UUIDs, so a UDID can never escape a lock or r
   for (const bad of ['', 'A', '../../etc', 'CAB91C3C-2549-4C26-A61A-EF315DE1A7CA/..']) expect(isSimulatorUdid(bad)).toBe(false)
 })
 
+describe('keptSimulators', () => {
+  const [proMax, duo, ipadName] = KEPT_SIMULATOR_NAMES
+
+  test('ignores case, spacing, dashes and brackets in a name', () => {
+    expect(simulatorNameKey('iPad Pro (13-inch) (M5)')).toBe(simulatorNameKey('ipad pro 13‑inch  (M5)'))
+    expect(simulatorNameKey('iPhone Duo')).not.toBe(simulatorNameKey('Atlas iPhone Duo'))
+  })
+
+  test('keeps one device per kept name, the most recently used, and nothing else', () => {
+    const older = iphone('E', duo, '2026-01-01T00:00:00Z')
+    const newer = iphone('F', duo.toUpperCase(), '2026-10-01T00:00:00Z')
+    const available = [iphone('A', 'iPhone 16'), older, ipad('P', ipadName), newer, iphone('D', 'Atlas iPhone Duo'), iphone('M', proMax)]
+    expect(keptSimulators(available)).toEqual([available[5], newer, available[2]] as Simulator[])
+  })
+})
+
 describe('planSessionDevice', () => {
+  const [proMax, duo, ipadName] = KEPT_SIMULATOR_NAMES
   const available = [
-    iphone('A', 'iPhone 18 Pro', '2026-10-29T01:00:00Z'),
-    iphone('B', 'iPhone 18 Pro', '2026-10-29T02:00:00Z'),
-    iphone('C', 'iPhone 17', '2026-10-28T00:00:00Z'),
-    iphone('D', 'iPhone 16', '2026-10-27T00:00:00Z'),
-    ipad('P'),
-    ipad('Q', 'iPad Pro 11-inch (M5)'),
+    iphone('A', proMax, '2026-10-29T01:00:00Z'),
+    iphone('B', duo, '2026-10-29T02:00:00Z'),
+    // Not kept: never claimed, even when booted, recently used, or holding a current build.
+    iphone('X', 'iPhone 16', '2026-10-30T00:00:00Z'),
+    iphone('Y', duo, '2026-10-01T00:00:00Z'),
+    ipad('P', ipadName),
+    ipad('Q', 'iPad Pro 11-inch (M5)', '2026-10-30T00:00:00Z'),
   ]
-  const [a, b, c, d, p, q] = available as [Simulator, Simulator, Simulator, Simulator, Simulator, Simulator]
+  const [a, b, x, y, p, q] = available as [Simulator, Simulator, Simulator, Simulator, Simulator, Simulator]
   const none = new Set<string>()
   const plan = (request: string | undefined, booted: Simulator[], claimed = none, current = none) =>
     planSessionDevice(request, { available, booted }, claimed, current)
@@ -171,11 +192,11 @@ describe('planSessionDevice', () => {
   })
 
   test('boots a device with a current build rather than build onto a booted one, under the cap', () => {
-    expect(plan(undefined, [b], none, new Set(['C']))).toEqual(picked(c, true, true))
+    expect(plan(undefined, [b], none, new Set(['A']))).toEqual(picked(a, true, true))
   })
 
   test('builds onto a booted device rather than boot a third iPhone for its build', () => {
-    expect(plan(undefined, [a, b], new Set(['A']), new Set(['C']))).toEqual(picked(b, false, false))
+    expect(plan(undefined, [x, b], none, new Set(['A']))).toEqual(picked(b, false, false))
   })
 
   test('without current builds, reuses the most recently used booted iPhone, else boots one', () => {
@@ -184,26 +205,49 @@ describe('planSessionDevice', () => {
     expect(plan(undefined, [p])).toEqual(picked(b, true, false))
   })
 
-  test('skips devices other sessions claimed', () => {
+  test('picks only among the kept iPhones by default, never another booted or current simulator', () => {
+    expect(plan(undefined, [x, y], none, new Set(['X', 'Y']))).toEqual(picked(b, true, false))
+    expect(plan(undefined, [x, a], none, new Set(['X']))).toEqual(picked(a, false, false))
+  })
+
+  test('skips devices other sessions claimed, and waits when both kept iPhones are held', () => {
     expect(plan(undefined, [a, b], new Set(['B']))).toEqual(picked(a, false, false))
     expect(plan(undefined, [b], new Set(['B']))).toEqual(picked(a, true, false))
+    expect(plan(undefined, [a, b], new Set(['A', 'B']))).toEqual({ kind: 'claimed', devices: [a, b] })
   })
 
-  test('never boots a third iPhone beside two another session holds, unless the request names it', () => {
-    // Only reachable when both booted iPhones are claimed: it boots past the cap rather than stall.
-    expect(plan(undefined, [a, b], new Set(['A', 'B']))).toEqual(picked(c, true, false))
-    expect(plan('iPhone 16', [a, b], new Set(['A']))).toEqual(picked(d, true, false))
+  test('boots a kept iPhone past the cap only when every booted one is held, or when named', () => {
+    // Two iPhones booted, the only kept one among them held: it boots past the cap rather than stall.
+    expect(plan(undefined, [x, a], new Set(['A']))).toEqual(picked(b, true, false))
+    expect(plan(duo, [x, a])).toEqual(picked(b, true, false))
   })
 
-  test('matches a named device by name or UDID in any case, and keeps the iPhone for an iPad run', () => {
-    expect(plan('iphone 18 PRO', [a])).toEqual(picked(a, false, false))
-    expect(plan('q', [a, p])).toEqual(picked(q, true, false))
+  test('matches a kept device by a variant of its name or by its UDID in any case, and keeps the iPhone for an iPad run', () => {
+    expect(plan(proMax.toLowerCase(), [a])).toEqual(picked(a, false, false))
+    expect(plan(` ${ipadName.toUpperCase()} `, [a])).toEqual(picked(p, true, false))
+    expect(plan('p', [a, p])).toEqual(picked(p, false, false))
   })
 
-  test('reports a named device another session holds, and a name simctl does not list', () => {
-    expect(plan('iPad Pro 11-inch (M5)', [q], new Set(['Q']))).toEqual({ kind: 'claimed', devices: [q] })
-    expect(plan('Nope', [a])).toEqual({ kind: 'unknown' })
-    expect(planSessionDevice(undefined, { available: [p, q], booted: [p] }, none, none)).toEqual({ kind: 'unknown' })
+  test('refuses a simulator outside the kept ones, by name or UDID, naming them all', () => {
+    for (const request of ['iPhone 16', 'iPhone 17', 'Q', 'x', 'Nope']) {
+      const choice = plan(request, [x, q])
+      expect(choice.kind).toBe('unknown')
+      const message = (choice as { message: string }).message
+      expect(message).toContain('is not a kept simulator')
+      for (const name of KEPT_SIMULATOR_NAMES) expect(message).toContain(`"${name}"`)
+    }
+  })
+
+  test('refuses the UDID of a second simulator with a kept name, naming the one simgate uses', () => {
+    expect(plan('y', [y])).toEqual({ kind: 'unknown', message: `y is a second "${duo}"; simgate uses only B. Pass "${duo}" or that UDID.` })
+  })
+
+  test('reports a kept device missing here, a kept device another session holds, and no kept iPhone', () => {
+    const missing = planSessionDevice(duo, { available: [a, x], booted: [] }, none, none)
+    expect(missing).toEqual({ kind: 'unknown', message: expect.stringContaining(`No simulator named "${duo}" exists here`) })
+    expect(plan(ipadName, [p], new Set(['P']))).toEqual({ kind: 'claimed', devices: [p] })
+    const iPadsOnly = planSessionDevice(undefined, { available: [p, q, x], booted: [p] }, none, none)
+    expect(iPadsOnly).toEqual({ kind: 'unknown', message: expect.stringContaining('No kept iPhone simulator exists here') })
   })
 })
 

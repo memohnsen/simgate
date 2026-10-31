@@ -267,9 +267,10 @@ const startBuildRecording = async (options: RunOptions, udid: string | undefined
 export const runSession = async (command: string[], options: RunOptions): Promise<never> => {
   // Off macOS, or when simctl fails, there is no simulator to claim: the session takes slot 1 only.
   const listing = options.platform === 'ios' ? listSimulators() : undefined
-  if (listing !== undefined && options.request !== undefined) {
-    if (planSessionDevice(options.request, listing, new Set(), new Set()).kind === 'unknown') {
-      console.error(`simgate: no simulator matches "${options.request}". See xcrun simctl list devices.`)
+  if (listing !== undefined) {
+    const plan = planSessionDevice(options.request, listing, new Set(), new Set())
+    if (plan.kind === 'unknown') {
+      console.error(`simgate: ${plan.message}`)
       process.exit(2)
     }
   }
