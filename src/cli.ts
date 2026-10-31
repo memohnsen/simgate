@@ -29,7 +29,7 @@ run options:
                               slot 1 only; iOS may take slot 2 beside another session.
   --no-metro                  The command drives a simulator without Metro: no port check.
   --device <name or UDID>     The simulator to claim (also SIMGATE_DEVICE, or the command's
-                              own --device): only one of the four kept in Device Hub,
+                              own --device): only one of the three kept in Device Hub,
 ${KEPT_SIMULATOR_NAMES.map((name) => `                                ${name}`).join('\n')}
                               or its UDID. Default: a kept iPhone.
   --bundle-id <id>            The app: prefer simulators with a current build of it.

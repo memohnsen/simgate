@@ -184,12 +184,12 @@ const mostRecentlyUsed = (simulators: readonly Simulator[]) =>
   )
 
 /**
- * The only simulators a session claims: the four kept in Device Hub on every Mac. Each is
+ * The only simulators a session claims: the three kept in Device Hub on every Mac. Each is
  * pinned by its display name, not a UDID, since every Mac has its own. A request outside
  * these fails rather than claim, boot or create another device: every simulator used grows
  * its own folder of builds and data, which is how a Mac fills up.
  */
-export const KEPT_SIMULATOR_NAMES = ['iPhone 18 Pro Max', 'iPhone 16', 'iPhone Duo', 'iPad Pro 13-inch (M5)'] as const
+export const KEPT_SIMULATOR_NAMES = ['iPhone 18 Pro Max', 'iPhone Duo', 'iPad Pro 13-inch (M5)'] as const
 
 /**
  * A name as matched against the kept ones: case, spacing, dashes, quotes and brackets
