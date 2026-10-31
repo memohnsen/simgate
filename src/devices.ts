@@ -183,6 +183,73 @@ const mostRecentlyUsed = (simulators: readonly Simulator[]) =>
     undefined,
   )
 
+/**
+ * The only simulators a session claims: the four kept in Device Hub on every Mac. Each is
+ * pinned by its display name, not a UDID, since every Mac has its own. A request outside
+ * these fails rather than claim, boot or create another device: every simulator used grows
+ * its own folder of builds and data, which is how a Mac fills up.
+ */
+export const KEPT_SIMULATOR_NAMES = ['iPhone 18 Pro Max', 'iPhone 16', 'iPhone Duo', 'iPad Pro 13-inch (M5)'] as const
+
+/**
+ * A name as matched against the kept ones: case, spacing, dashes, quotes and brackets
+ * ignored, so `iPad Pro (13-inch) (M5)` and `ipad pro 13-inch (M5)` are one device.
+ */
+export const simulatorNameKey = (name: string) => name.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+
+/** The kept name `name` is a variant of, if any. */
+const keptName = (name: string) => {
+  const key = simulatorNameKey(name)
+  return KEPT_SIMULATOR_NAMES.find((kept) => simulatorNameKey(kept) === key)
+}
+
+/**
+ * The kept simulators simctl lists, one per kept name. When a name is on several devices
+ * (one per installed runtime), the most recently used one: sessions only ever use that one,
+ * so it stays the one.
+ */
+export const keptSimulators = (available: readonly Simulator[]): Simulator[] => {
+  const kept: Simulator[] = []
+  for (const name of KEPT_SIMULATOR_NAMES) {
+    const device = mostRecentlyUsed(available.filter((simulator) => keptName(simulator.name) === name))
+    if (device !== undefined) kept.push(device)
+  }
+  return kept
+}
+
+const keptList = () => KEPT_SIMULATOR_NAMES.map((name) => `"${name}"`).join(', ')
+
+/**
+ * The kept devices a request may claim: every kept iPhone with no request, else the kept
+ * device it names (by name, or by UDID in any case). A message when it names none.
+ */
+const resolveRequest = (
+  request: string | undefined,
+  available: readonly Simulator[],
+): { devices: Simulator[] } | { message: string } => {
+  const kept = keptSimulators(available)
+  if (request === undefined) {
+    const iphones = kept.filter((simulator) => simulator.family === 'iphone')
+    if (iphones.length > 0) return { devices: iphones }
+    return { message: `No kept iPhone simulator exists here. simgate uses only ${keptList()}; add them in Device Hub.` }
+  }
+  const byUdid = kept.filter((simulator) => simulator.udid.toLowerCase() === request.toLowerCase())
+  if (byUdid.length > 0) return { devices: byUdid }
+  const duplicate = available.find((simulator) => simulator.udid.toLowerCase() === request.toLowerCase())
+  const duplicateOf = duplicate && keptName(duplicate.name)
+  if (duplicateOf !== undefined) {
+    const used = kept.find((simulator) => keptName(simulator.name) === duplicateOf) as Simulator
+    return { message: `${request} is a second "${duplicateOf}"; simgate uses only ${used.udid}. Pass "${duplicateOf}" or that UDID.` }
+  }
+  const name = keptName(request)
+  if (name === undefined) {
+    return { message: `"${request}" is not a kept simulator. simgate uses only ${keptList()}: pass one of these with --device or SIMGATE_DEVICE.` }
+  }
+  const byName = kept.filter((simulator) => keptName(simulator.name) === name)
+  if (byName.length > 0) return { devices: byName }
+  return { message: `No simulator named "${name}" exists here (see xcrun simctl list devices). Add it in Device Hub; simgate never creates one.` }
+}
+
 /** Booted devices of one family a session may leave running: one per iOS session slot. */
 export const MAX_BOOTED_PER_FAMILY = 2
 
@@ -197,13 +264,13 @@ export type DeviceChoice =
     }
   /** Every matching device is claimed by another live session. */
   | { kind: 'claimed'; devices: Simulator[] }
-  /** Nothing simctl lists matches the request. */
-  | { kind: 'unknown' }
+  /** No kept simulator matches the request: `message` says why and lists the kept ones. */
+  | { kind: 'unknown'; message: string }
 
 /**
- * Which simulator a session claims. With no request it is an iPhone; a request (name or
- * UDID, any case, as Expo matches) decides the family. Devices another live session
- * claimed are skipped. Among the rest, in order:
+ * Which simulator a session claims, always one of the kept simulators (`keptSimulators`).
+ * With no request it is an iPhone; a request (a kept name, or a kept device's UDID) decides
+ * the family. Devices another live session claimed are skipped. Among the rest, in order:
  *
  * 1. a booted device with a current build (nothing to boot or build);
  * 2. a shut-down device with a current build, while fewer than two of its family are booted;
@@ -219,13 +286,9 @@ export const planSessionDevice = (
   claimedByOthers: ReadonlySet<string>,
   currentBuilds: ReadonlySet<string>,
 ): DeviceChoice => {
-  const wanted = request?.toLowerCase()
-  const matches = (simulator: Simulator) =>
-    wanted === undefined
-      ? simulator.family === 'iphone'
-      : simulator.udid.toLowerCase() === wanted || simulator.name.toLowerCase() === wanted
-  const candidates = listing.available.filter(matches)
-  if (candidates.length === 0) return { kind: 'unknown' }
+  const resolved = resolveRequest(request, listing.available)
+  if ('message' in resolved) return { kind: 'unknown', message: resolved.message }
+  const candidates = resolved.devices
   const free = candidates.filter((simulator) => !claimedByOthers.has(simulator.udid))
   if (free.length === 0) return { kind: 'claimed', devices: candidates }
 
@@ -233,7 +296,7 @@ export const planSessionDevice = (
   const isBooted = (simulator: Simulator) => bootedIds.has(simulator.udid)
   const isCurrent = (simulator: Simulator) => currentBuilds.has(simulator.udid)
   const mayBoot = (simulator: Simulator) =>
-    wanted !== undefined ||
+    request !== undefined ||
     listing.booted.filter((booted) => booted.family === simulator.family).length < MAX_BOOTED_PER_FAMILY
   const tiers: ((simulator: Simulator) => boolean)[] = [
     (simulator) => isBooted(simulator) && isCurrent(simulator),
@@ -247,7 +310,7 @@ export const planSessionDevice = (
     const device = mostRecentlyUsed(free.filter(tier))
     if (device !== undefined) return { kind: 'device', device, boot: !isBooted(device), currentBuild: isCurrent(device) }
   }
-  return { kind: 'unknown' }
+  return { kind: 'unknown', message: 'No kept simulator is free.' }
 }
 
 /**

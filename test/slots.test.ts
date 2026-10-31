@@ -249,8 +249,8 @@ describe('simulatorSlots', () => {
   })
 
   test('gives the slot back when the device plan fails', async () => {
-    const failing: ChooseDevice = async () => ({ kind: 'unknown' })
-    await expect(acquire('/work/mine', { chooseDevice: failing })).rejects.toThrow('No simulator matches')
+    const failing: ChooseDevice = async () => ({ kind: 'unknown', message: '"Nope" is not a kept simulator.' })
+    await expect(acquire('/work/mine', { chooseDevice: failing })).rejects.toThrow('"Nope" is not a kept simulator.')
     expect(existsSync(basePath)).toBe(false)
   })
 })

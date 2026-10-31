@@ -173,7 +173,7 @@ export const simulatorSlots =
     const claimDevice = async (choose: ChooseDevice, session: SimulatorSession): Promise<string | { reason: string }> => {
       for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt += 1) {
         const choice = await choose(claimedDevices(basePath, owner.token, isAlive))
-        if (choice.kind === 'unknown') throw new Error('No simulator matches the requested device; see xcrun simctl list devices.')
+        if (choice.kind === 'unknown') throw new Error(choice.message)
         if (choice.kind === 'claimed') return { reason: claimedReason(choice.devices) }
         const path = deviceLockPath(basePath, choice.device.udid)
         sweepLeftovers(path)
@@ -222,7 +222,7 @@ export const simulatorSlots =
       // Plan before taking a slot: a session whose devices are all claimed waits without
       // holding slot 1, which Android needs. The plan is redone under the slot to claim.
       const preplan = chooseDevice === undefined ? undefined : await chooseDevice(claimedDevices(basePath, owner.token, isAlive))
-      if (preplan?.kind === 'unknown') throw new Error('No simulator matches the requested device; see xcrun simctl list devices.')
+      if (preplan?.kind === 'unknown') throw new Error(preplan.message)
       const slots = [1]
       let result: string[] | { reason: string } | undefined =
         preplan?.kind === 'claimed' ? { reason: claimedReason(preplan.devices) } : await takeSlot(1)
